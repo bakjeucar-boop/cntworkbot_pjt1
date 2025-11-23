@@ -1,0 +1,10 @@
+{
+  "document_type_mapping": {
+    "(AURI)해석례로 읽는 건축법.pdf": "qa_interpretation",
+    "(국가법령정보센터)건축법.pdf": "building_law",
+    "(서울특별시)건축법령집 2024.PDF": "legal_compilation",
+    "건설공사발주자의 산업안전보건업무 가이드북.pdf": "safety_guidebook",
+    "건축허가등의 동의 업무처리 표준 매뉴얼.pdf": "procedural_manual",
+    "산업안전보건기준에 관한 규칙.pdf": "safety_regulation"
+  }
+}
