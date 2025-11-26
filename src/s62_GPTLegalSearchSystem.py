@@ -6,17 +6,14 @@ GPT 기반 분류를 사용하는 법령 QA 시스템
 GROUNDING_PREAMBLE = """## 핵심 원칙 (절대 준수)
 
 ### 🚨 Hallucination 방지 규칙
-1. **제공된 [관련 법령 정보]에 있는 내용만 답변하세요.**
-2. **정보가 없으면 "제공된 문서에서 해당 내용을 찾을 수 없습니다"라고 명확히 말하세요.**
+1. **제공된 [해당 법령 정보]에 있는 내용만 답변하세요.**
+2. **해당 수치, 법령 정보가 청크에 없으면 "제공된 문서에서 해당 내용을 찾을 수 없습니다"라고 명확히 말하세요.**
 3. **추측하거나 일반 지식으로 보충하지 마세요.**
 4. **부분적으로만 답변 가능하면, 답변 가능한 부분만 답하고 나머지는 "확인 불가"로 표시하세요.**
 
-### 📌 출처 인용 규칙
-- 모든 정보에 [문서번호] 형식으로 출처를 표시하세요 (예: [1], [2])
-- 여러 문서에서 온 정보는 [1,2] 형식으로 표시
-
 ### ❌ 금지 사항
 - 제공된 문서에 없는 법 조항 번호 언급 금지
+- 문서에 필요한 내용이 없으면 과감히 스킵
 - 문서에 없는 수치/기준 창작 금지
 - "일반적으로", "보통" 같은 모호한 표현으로 추측 금지
 - 학습된 일반 지식으로 답변 보충 금지
@@ -31,8 +28,6 @@ from s61_QueryClassifier import QueryClassifier
 class EnhancedLegalQASystem:
     """유형별 답변을 제공하는 고급 QA 시스템"""
 
-    EXPAND_TYPES = {"일반_정보_검색", "상황별_컨설팅"}
-
     def __init__(self, search_engine, openai_api_key: str):
         self.search_engine = search_engine
         self.client = OpenAI(api_key=openai_api_key)
@@ -40,71 +35,15 @@ class EnhancedLegalQASystem:
         self.response_templates = self._load_response_templates()
             
     def _execute_search(self, query: str, query_type: str, top_k: int = 5, progress_callback=None) -> List[Dict]:
-
-        def update_progress(msg: str):
-            if progress_callback:
-                progress_callback(msg)
-
-        # 쿼리 확장 (특정 유형만)
-        if query_type in self.EXPAND_TYPES:
-            update_progress("🔄 쿼리 확장 중...")
-            search_query = self._expand_query(query, query_type)
-            update_progress(f"  ✓ 확장 완료: {search_query[:50]}...")
-        else:
-            search_query = query
         
         # 하이브리드 검색 + 리랭킹
         return self.search_engine.hybrid_search(
-            search_query, 
+            query, 
             top_k=top_k,
             use_rerank=True,
             progress_callback=progress_callback
         )
-    
-    def _expand_query(self, query: str, query_type: str) -> str:
-        """유형별로 다른 쿼리 확장 전략"""
-        
-        if query_type == "일반_정보_검색":
-            # 키워드 추가 방식
-            prompt = f"""건설/안전 법령 검색용으로 쿼리를 확장해주세요.
-
-    질문: {query}
-
-    추가할 것:
-    1. 관련 법률 용어
-    2. 예상되는 조항 키워드 (제○조)
-    3. 동의어
-
-    한 줄로 출력 (설명 없이):"""
-
-        elif query_type == "상황별_컨설팅":
-            # 핵심 키워드 추출 방식
-            prompt = f"""다음 현장 상황 질문에서 법령 검색용 핵심 키워드만 추출해주세요.
-
-    질문: {query}
-
-    추출할 것:
-    1. 핵심 대상 (예: 작업발판, 비계, 굴착)
-    2. 관련 수치 기준 (예: 40cm, 2m 이상)
-    3. 예상되는 관련 조항 (제○조)
-
-    검색 키워드만 한 줄로 출력 (설명 없이):"""
-
-        response = self.client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
-            temperature=0
-        )
-        
-        expanded = response.choices[0].message.content.strip()
-        
-        # 상황별_컨설팅은 추출된 키워드로 검색
-        if query_type == "상황별_컨설팅":
-            return expanded  # 원본 대신 키워드만
-        else:
-            return f"{query} {expanded}"  # 원본 + 확장
-        
+            
     def generate_answer(self, query: str, 
                     format_for_user: bool = True,
                 progress_callback=None) -> Dict:
@@ -257,16 +196,12 @@ class EnhancedLegalQASystem:
         prompt =  f"""## 변환 규칙
 
         ### 필수 포함 사항
+        JSON 형식을 절대 출력하지 마세요
         1. **신뢰도 표시**: 답변 시작에 신뢰도 표시
         - 🟢 HIGH: "확인된 정보입니다"
         - 🟡 MEDIUM: "부분적으로 확인된 정보입니다"  
         - 🔴 LOW: "제한적인 정보만 확인되었습니다"
         - 신뢰도 정보가 없으면 생략
-
-        2. **확인 불가 항목 안내**: "확인_불가_항목"이 있으면 반드시 언급
-        - "다만, [항목]에 대해서는 제공된 문서에서 확인할 수 없었습니다."
-
-        3. **출처 명시**: 답변 끝에 참고 문서 표시
 
         ### 변환 스타일
         - 존댓말 사용 (~입니다, ~해주세요)
@@ -282,26 +217,49 @@ class EnhancedLegalQASystem:
         ## 구조화된 답변
         {json.dumps(clean_response, ensure_ascii=False, indent=2)}
 
-        ## 자연스러운 대화체로 변환:
+        ## 자연스러운 대화체로 변환(JSON 형식 금지):
         """
         
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.5
+                temperature=0.3
             )
-            return response.choices[0].message.content
+
+            result = response.choices[0].message.content.strip()
+        
+            # JSON으로 시작하면 변환 실패 → 기본 텍스트 반환
+            if result.startswith('{') or result.startswith('['):
+                print("  ⚠️ GPT가 JSON 반환함, 기본 텍스트 사용")
+                return self._fallback_format(clean_response)
+        
+            return result
             
         except Exception as e:
-            print(f"  ✗ 사용자 답변 변환 실패: {e}")
-            # 실패 시 JSON의 주요 내용만 간단히 반환
-            if "법조문" in clean_response:
-                return clean_response["법조문"].get("조문_내용", "답변 생성 실패")
-            elif "주제" in clean_response:
-                return clean_response.get("주제", "답변 생성 실패")
-            else:
-                return "답변 생성 중 오류가 발생했습니다."
+            print(f"  ✗ 변환 실패: {e}")
+            return self._fallback_format(clean_response)
+        
+    def _fallback_format(self, response: dict) -> str:
+        """변환 실패 시 기본 포맷"""
+        if "법조문" in response:
+            법조문 = response["법조문"]
+            return f"""🟢 확인된 정보입니다.
+
+    **{법조문.get('법령명', '')} {법조문.get('조항', '')}**
+
+    {법조문.get('조문_내용', '')}
+
+    💡 {법조문.get('간단_해설', '')}"""
+        
+        elif "문서_기반_답변" in response:
+            답변 = response["문서_기반_답변"]
+            return f"""🟢 확인된 정보입니다.
+
+    {답변.get('핵심_요구사항', '')}"""
+        
+        return "답변을 생성했습니다. 상세 내용은 출처를 확인해주세요."
+
               
     def _build_context(self, search_results: List[Dict], query_type: str) -> str:
         """검색 결과를 컨텍스트로 구성"""
@@ -325,26 +283,15 @@ class EnhancedLegalQASystem:
         return {
                 "법조문_조회": GROUNDING_PREAMBLE + """
     ## 역할
-    당신은 법령 조회 전문가입니다. 요청된 조문을 **문서에서 찾아** 정확하게 제시합니다.
+    당신은 법령 조회 전문가입니다. 요청된 숫자의 조문을 **문서에서 찾아** 정확하게 제시합니다.
+    문서에서 조문이 파악되지 않으면, "제공된 문서에서 해당 조문을 찾을 수 없습니다"라고 답변하세요.
 
     ## 답변 전 체크리스트 (스스로 확인)
     □ 요청된 조문이 [관련 법령 정보]에 실제로 있는가?
     □ 조문 번호가 정확한가?
     □ 인용할 원문이 문서에 있는가?
-
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "법조문": {
-        "법령명": "문서에 있는 정확한 법령명 [출처번호]",
-        "조항": "제○조 (문서에서 확인된 것만)",
-        "조문_내용": "문서 원문 그대로 인용 [출처번호]",
-        "간단_해설": "문서 내용 기반 해설만",
-        "관련_조항": ["문서에서 언급된 것만"]
-    },
-    "확인_불가_항목": ["찾을 수 없는 정보"],
-    "신뢰도": "HIGH/MEDIUM/LOW",
-    "신뢰도_사유": "판단 근거"
+    □ 수치로 뒤범벅된 문서만 존재하는 경우도 있습니다. 청킹이 잘못된 경우에요. 그런 경우, "제공된 문서에서 해당 내용을 찾을 수 없습니다"라고 답변하세요.
+    □ 내용이 없는 청크도 있어요. 그런 경우, 해당 내용은 무시하세요.
     }""",
                 
                 "일반_정보_검색": GROUNDING_PREAMBLE + """
@@ -354,20 +301,8 @@ class EnhancedLegalQASystem:
     ## 답변 전 체크리스트
     □ 언급하는 모든 법령/조항이 [관련 법령 정보]에 있는가?
     □ 수치나 기준이 문서에서 확인되는가?
-
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "주제": "질문의 주제",
-    "문서_기반_답변": {
-        "관련_법령": ["법령명 조항 [출처번호]"],
-        "핵심_요구사항": "문서에서 확인된 내용만 [출처번호]",
-        "준수_방법": ["문서에 명시된 것만"]
-    },
-    "확인_불가_항목": ["문서에서 찾을 수 없는 정보"],
-    "추가_확인_필요": "더 정확한 답변을 위해 필요한 정보",
-    "신뢰도": "HIGH/MEDIUM/LOW",
-    "신뢰도_사유": "판단 근거"
+    □ 수치로 뒤범벅된 문서만 존재하는 경우도 있습니다. 청킹이 잘못된 경우에요. 그런 경우, "제공된 문서에서 해당 내용을 찾을 수 없습니다"라고 답변하세요.
+    □ 내용이 없는 청크도 있어요. 그런 경우, 해당 내용은 무시하세요.
     }""",
                 
                 "상황별_컨설팅": GROUNDING_PREAMBLE + """
@@ -378,89 +313,36 @@ class EnhancedLegalQASystem:
     상황별 컨설팅은 hallucination 위험이 높습니다!
     - 문서에 **명확한 기준**이 있을 때만 판단
     - 기준이 불명확하면 **"판단 보류"**로 답변
-
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "상황_분석": {
-        "파악된_상황": "질문에서 파악한 상황",
-        "적용_가능_법령": "문서에서 찾은 관련 법령 [출처번호]",
-        "문서_내_관련_기준": "구체적 기준 [출처번호]"
-    },
-    "법적_판단": {
-        "판단_가능_여부": true/false,
-        "결론": "적법/부적법/조건부적법/판단불가",
-        "판단_근거": "문서에서 인용한 근거 [출처번호]",
-        "판단불가_사유": "판단할 수 없는 이유 (해당시)"
-    },
-    "권장_조치": ["문서에 근거한 조치만"],
-    "확인_불가_항목": ["판단에 필요하나 문서에 없는 정보"],
-    "신뢰도": "HIGH/MEDIUM/LOW",
-    "면책_조항": "이는 제공된 문서 기반의 일반적 정보이며, 구체적 사안은 전문가 상담이 필요합니다."
     }""",
                 
                 "절차_안내": GROUNDING_PREAMBLE + """
     ## 역할
     당신은 행정 절차 안내 전문가입니다. **문서에 있는 절차만** 안내합니다.
-
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "절차명": "문서에서 확인된 절차명",
-    "절차": [
-        {
-        "단계": 1,
-        "내용": "문서 기반 설명 [출처번호]",
-        "근거_법령": "문서에서 확인된 법령",
-        "필요_서류": ["문서에 명시된 것만"],
-        "담당_기관": "확인되면 기재, 아니면 '확인 필요'",
-        "소요_기간": "확인되면 기재, 아니면 '확인 필요'"
-        }
-    ],
-    "확인_불가_항목": ["문서에서 찾을 수 없는 정보"],
-    "신뢰도": "HIGH/MEDIUM/LOW"
     }""",
                 
-                "문서_생성": GROUNDING_PREAMBLE + """
-    ## 역할
-    당신은 실무 문서 작성 전문가입니다. **문서에 근거한** 항목만 포함합니다.
+                "문서_생성": """## 역할
+당신은 건설 현장 실무 문서 작성 전문가입니다.
+제공된 법령을 기반으로 **실무에서 바로 사용할 수 있는** 완성도 높은 문서를 생성합니다.
 
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "문서_유형": "체크리스트/양식/계획서",
-    "제목": "문서 제목",
-    "근거_법령": ["문서에서 확인된 법령 [출처번호]"],
-    "내용": [
-        {
-        "번호": 1,
-        "항목": "문서 기반 항목명",
-        "기준": "문서에서 확인된 기준 [출처번호]",
-        "법적_근거": "문서에서 확인된 조항"
-        }
-    ],
-    "문서_한계": "이 문서는 제공된 법령 기준만 포함합니다.",
-    "신뢰도": "HIGH/MEDIUM/LOW"
-    }""",
+## 문서 생성 원칙
+1. **법적 필수 항목**: 제공된 문서에서 확인된 법령 기준
+2. **실무 권장 항목**: 현장에서 일반적으로 필요한 추가 점검 사항 (GPT 권장으로 표시)
+3. **실용성 우선**: 현장에서 바로 사용할 수 있도록 구체적으로 작성
+
+## 작성 가이드
+- 각 항목의 목적에 맞게 구체적으로 생성
+- 수치 기준이 있으면 명확히 기재 (예: "40cm 이상", "2m 이내")
+- 현장 작업자가 이해하기 쉬운 용어 사용
+
+## 출력 형식
+{
+  "제목": "구체적인 문서 제목",
+  "작성_목적": "이 문서의 활용 목적",
+  "적용_범위": "어떤 상황/현장에서 사용하는지",
+  "내용": "문서의 주요 내용 요약 및 상세 내용 정확히, 구체적으로, 현장 반영, 상황 반영, 실무에 활용할 수 있는 정도로 기재"
+  }
+""",
                 
                 "비교_분석": GROUNDING_PREAMBLE + """
     ## 역할
-    당신은 법령 비교 분석 전문가입니다. **문서에 있는 내용만** 비교합니다.
-
-    ## 출력 형식
-    {
-    "검색_성공": true/false,
-    "비교_대상": ["대상1", "대상2"],
-    "비교_가능_항목": [
-        {
-        "항목": "비교 항목",
-        "대상1": "문서 기반 설명 [출처번호]",
-        "대상2": "문서 기반 설명 [출처번호]"
-        }
-    ],
-    "비교_불가_항목": [
-        {"항목": "정보 부족한 항목", "사유": "이유"}
-    ],
-    "핵심_차이점": "문서에서 확인된 차이만",
-    "신뢰도": "HIGH/MEDIUM/LOW"
-    }"""}
+    당신은 법령 비교 분석 전문가입니다. **문서에 있는 내용만** 비교합니다. 핵심 차이점을 명확하고, 상세하게 기재해주세요."""}

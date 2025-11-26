@@ -54,6 +54,54 @@ class LegalSearchEngine:
         print(f"  - FAISS 벡터 수: {faiss_index.ntotal}")
         print(f"  - BM25 문서 수: {len(self.bm25_corpus)}")
     
+    def filter_by_doc_name(self, results: List[Dict], query: str) -> List[Dict]:
+        """쿼리에서 문서명 키워드 추출 → metadata.doc_name으로 필터링"""
+        import re
+        
+        # 쿼리 키워드 → doc_name 매칭 패턴 (순서 중요: 구체적인 것 먼저)
+        doc_mapping = [
+            # (쿼리 패턴, doc_name 패턴)
+            (r'시행규칙', r'시행규칙'),
+            (r'시행령', r'시행령'),
+            (r'AURI|해석례', r'AURI|해석례'),
+            (r'건설산업기본법', r'건설산업기본법'),
+            (r'건설기술', r'건설기술'),
+            (r'산업안전', r'산업안전'),
+            (r'국토', r'국토'),
+        ]
+        
+        # 쿼리에서 문서 키워드 찾기
+        target_pattern = None
+        for query_pattern, doc_pattern in doc_mapping:
+            if re.search(query_pattern, query, re.IGNORECASE):
+                target_pattern = doc_pattern
+                break
+        
+        # 키워드 없으면 기본값 = 건축법 본법 (시행령/시행규칙 제외)
+        if not target_pattern:
+            target_pattern = r'건축법'
+            exclude_pattern = r'시행령|시행규칙'
+        else:
+            exclude_pattern = None
+        
+        # 필터링
+        filtered = []
+        for r in results:
+            doc_name = r.get('metadata', {}).get('doc_name', '')
+            
+            # 포함 조건
+            if not re.search(target_pattern, doc_name, re.IGNORECASE):
+                continue
+            
+            # 제외 조건
+            if exclude_pattern and re.search(exclude_pattern, doc_name, re.IGNORECASE):
+                continue
+            
+            filtered.append(r)
+        
+        # 필터링 결과 없으면 원본 반환
+        return filtered if filtered else results
+
     def tokenize_korean(self, text: str) -> List[str]:
         """한글 텍스트 토큰화"""
         tokens = re.findall(r'\w+', text.lower())
@@ -224,8 +272,9 @@ class LegalSearchEngine:
     
     def hybrid_search(self,
                     query: str,
-                    top_k: int = 10,  # ← 쉼표 빠졌었음!
+                    top_k: int = 10,
                     use_rerank: bool = True,
+                    use_bm25: bool = False,
                     progress_callback: Optional[Callable[[str], None]] = None) -> List[Dict]:
         """
         하이브리드 검색 + 리랭킹
@@ -245,20 +294,25 @@ class LegalSearchEngine:
         vector_results = self.vector_search(query, top_k=top_k)
         update_progress(f"  ✓ 벡터 검색 완료: {len(vector_results)}개")
         
-        update_progress("🔍 키워드 검색 중...")
-        keyword_results = self.keyword_search(query, top_k=top_k)
-        update_progress(f"  ✓ 키워드 검색 완료: {len(keyword_results)}개")
-        
-        update_progress("🔀 검색 결과 융합 중...")
-        hybrid_results = self.reciprocal_rank_fusion(vector_results, keyword_results)
-        update_progress(f"  ✓ 융합 완료: {len(hybrid_results)}개 후보") 
+        if use_bm25:
+            update_progress("🔍 키워드 검색 중...")
+            keyword_results = self.keyword_search(query, top_k=top_k)
+            update_progress(f"  ✓ 키워드 검색 완료: {len(keyword_results)}개")
+            
+            update_progress("🔀 검색 결과 융합 중...")
+            hybrid_results = self.reciprocal_rank_fusion(vector_results, keyword_results)
+        else:
+            hybrid_results = vector_results
+
+        update_progress("📂 문서 필터링 중...")
+        filtered_results = self.filter_by_doc_name(hybrid_results, query)
+        update_progress(f"  ✓ {len(filtered_results)}개 문서 선별")
         
         if use_rerank:
-            update_progress(f"🎯 Reranker로 정밀 분석 중... ({min(len(hybrid_results), top_k)}개 문서)")
-            final_results = self.rerank(query, hybrid_results[:3], 3)
-            update_progress(f"  ✓ 리랭킹 완료: 상위 {len(final_results)}개 선정")
+            update_progress(f"🎯 Reranker로 정밀 분석 중...")
+            final_results = self.rerank(query, filtered_results[:10], top_k)
         else:
-            final_results = hybrid_results[:top_k]
+            final_results = filtered_results[:top_k]
         
         return final_results
 

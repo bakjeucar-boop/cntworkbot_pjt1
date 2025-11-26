@@ -126,7 +126,7 @@ def create_pdf(title: str, content: str) -> BytesIO:
 
 
 def format_document_content(answer: dict) -> str:
-    """문서_생성 응답을 편집 가능한 텍스트로 변환"""
+    """문서_생성 응답을 편집 가능한 텍스트로 변환 (개선된 버전)"""
     doc_type = answer.get("문서_유형", "문서")
     title = answer.get("제목", "제목 없음")
     
@@ -137,19 +137,76 @@ def format_document_content(answer: dict) -> str:
         "",
         f"문서 유형: {doc_type}",
         f"생성일: {datetime.now().strftime('%Y-%m-%d')}",
-        "",
     ]
     
+    # 작성 목적
+    if answer.get("작성_목적"):
+        content_lines.append(f"작성 목적: {answer['작성_목적']}")
+    
+    # 적용 범위
+    if answer.get("적용_범위"):
+        content_lines.append(f"적용 범위: {answer['적용_범위']}")
+    
+    content_lines.append("")
+    
+    # 근거 법령
     if answer.get("근거_법령"):
         content_lines.append("[ 근거 법령 ]")
         for law in answer["근거_법령"]:
             content_lines.append(f"  • {law}")
         content_lines.append("")
     
-    if answer.get("내용"):
+    # 내용 처리 (새 구조 / 기존 구조 모두 지원)
+    내용 = answer.get("내용", {})
+    
+    # 새 구조: 법적_필수_항목 + 실무_권장_항목
+    if isinstance(내용, dict):
+        법적_항목 = 내용.get("법적_필수_항목", [])
+        권장_항목 = 내용.get("실무_권장_항목", [])
+        
+        if 법적_항목:
+            content_lines.append("[ 법적 필수 점검 항목 ] ⚖️")
+            content_lines.append("")
+            for item in 법적_항목:
+                번호 = item.get("번호", "-")
+                항목 = item.get("항목", "")
+                기준 = item.get("기준", "")
+                점검_방법 = item.get("점검_방법", "")
+                법적_근거 = item.get("법적_근거", "")
+                
+                content_lines.append(f"{번호}. {항목}")
+                content_lines.append(f"   ├ 기준: {기준}")
+                if 점검_방법:
+                    content_lines.append(f"   ├ 점검 방법: {점검_방법}")
+                if 법적_근거:
+                    content_lines.append(f"   └ 법적 근거: {법적_근거}")
+                content_lines.append(f"   → 점검 결과: [ ] 적합  [ ] 부적합  [ ] 해당없음")
+                content_lines.append("")
+        
+        if 권장_항목:
+            content_lines.append("[ 실무 권장 점검 항목 ] 💡")
+            content_lines.append("")
+            for item in 권장_항목:
+                번호 = item.get("번호", "-")
+                항목 = item.get("항목", "")
+                기준 = item.get("기준", "")
+                점검_방법 = item.get("점검_방법", "")
+                비고 = item.get("비고", "")
+                
+                content_lines.append(f"{번호}. {항목}")
+                content_lines.append(f"   ├ 기준: {기준}")
+                if 점검_방법:
+                    content_lines.append(f"   ├ 점검 방법: {점검_방법}")
+                if 비고:
+                    content_lines.append(f"   └ 비고: {비고}")
+                content_lines.append(f"   → 점검 결과: [ ] 적합  [ ] 부적합  [ ] 해당없음")
+                content_lines.append("")
+    
+    # 기존 구조: 리스트 형태
+    elif isinstance(내용, list):
         content_lines.append("[ 점검 항목 ]")
         content_lines.append("")
-        for item in answer["내용"]:
+        for item in 내용:
             번호 = item.get("번호", "-")
             항목 = item.get("항목", "")
             기준 = item.get("기준", "")
@@ -162,11 +219,26 @@ def format_document_content(answer: dict) -> str:
             content_lines.append(f"   점검 결과: [ ] 적합  [ ] 부적합  [ ] 해당없음")
             content_lines.append("")
     
+    # 주의사항
+    if answer.get("주의사항"):
+        content_lines.append("[ 주의사항 ] ⚠️")
+        for item in answer["주의사항"]:
+            content_lines.append(f"  • {item}")
+        content_lines.append("")
+    
+    # 사용 방법
     if answer.get("사용_방법"):
         content_lines.append("[ 사용 방법 ]")
         content_lines.append(answer["사용_방법"])
         content_lines.append("")
     
+    # 문서 한계
+    if answer.get("문서_한계"):
+        content_lines.append("[ 문서 한계 ]")
+        content_lines.append(answer["문서_한계"])
+        content_lines.append("")
+    
+    # 서명란
     content_lines.extend([
         "",
         "─" * 60,
@@ -181,7 +253,6 @@ def format_document_content(answer: dict) -> str:
     ])
     
     return "\n".join(content_lines)
-
 
 def show_sources_expander(answer, unique_key=None):
     """
