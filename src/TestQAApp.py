@@ -14,6 +14,7 @@ from s62_GPTLegalSearchSystem import EnhancedLegalQASystem
 from s61_QueryClassifier import QueryClassifier
 from io import BytesIO
 from datetime import datetime
+import time
 
 # PDF 생성용
 from reportlab.lib.pagesizes import A4
@@ -29,6 +30,15 @@ st.set_page_config(
     page_icon="🏗️",
     layout="wide"
 )
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "current_document" not in st.session_state:
+    st.session_state.current_document = None
+
+if "document_title" not in st.session_state:
+    st.session_state.document_title = ""
 
 # 스타일
 st.markdown("""
@@ -173,16 +183,19 @@ def format_document_content(answer: dict) -> str:
     return "\n".join(content_lines)
 
 
-def show_sources_expander(full_answer: dict, unique_key: str = ""):
+def show_sources_expander(answer, unique_key=None):
     """
     근거 및 출처를 expander로 표시하는 재사용 가능한 함수
     
     Args:
-        full_answer: GPT 응답 전체 (메타데이터 포함)
+        answer: GPT 응답 전체 (메타데이터 포함)
         unique_key: Streamlit 위젯 키 중복 방지용 고유 문자열
     """
+    if unique_key is None:
+        unique_key = f"msg_{len(st.session_state.messages)}_{int(time.time())}"
+
     # 1. 메타데이터에서 검색 결과 추출
-    meta = full_answer.get("_meta", {})
+    meta = answer.get("_meta", {})
     search_results = meta.get("search_results", [])
     
     # 2. 검색 결과가 없으면 아무것도 표시하지 않음
@@ -190,9 +203,7 @@ def show_sources_expander(full_answer: dict, unique_key: str = ""):
         return
     
     # 3. 접었다 펼 수 있는 expander 생성
-    with st.expander("📚 근거 및 출처 보기"):
-        query_type = meta.get("query_type", "N/A")
-        
+    with st.expander("📚 근거 및 출처 보기"):        
         st.markdown("---")
         st.markdown(f"##### 🔍 검색된 청크 ({len(search_results)}개)")
         
@@ -290,29 +301,16 @@ with st.sidebar:
     
     st.caption("💡 문서는 법령 기반이지만, 전문가 검토를 권장합니다.")
 
-# 세션 상태 초기화
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "current_document" not in st.session_state:
-    st.session_state.current_document = None
-
-if "document_title" not in st.session_state:
-    st.session_state.document_title = ""
-
-
 # ============================================================
 # 📜 채팅 기록 표시 (페이지 로딩 시 실행)
 # ============================================================
-for msg in st.session_state.messages:
+for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         
         # assistant 메시지이고 full_answer가 있을 때만 출처 표시
         if msg["role"] == "assistant" and "full_answer" in msg:
-            # 🆕 함수 호출로 출처 표시 (과거 메시지)
-            show_sources_expander(msg["full_answer"], unique_key=str(id(msg)))
-
+            show_sources_expander(msg["full_answer"], unique_key=f"history_{idx}")
 
 # ============================================================
 # 📝 문서 편집기 표시
@@ -373,80 +371,52 @@ if prompt := st.chat_input("질문을 입력하세요"):
         st.markdown(prompt)
     
     # AI 답변 생성
-    with st.chat_message("assistant"):
+    # ===== 1단계: 진행 상황 표시 =====
+    with st.status("🤔 답변 생성 중...", expanded=True) as status:
         
-        # ===== 1단계: 진행 상황 표시 =====
-        with st.status("🤔 답변 생성 중...", expanded=True) as status:
-            
-            def progress_cb(msg):
-                st.write(msg)
+        def progress_cb(msg):
+            st.write(msg)
+
+        answer = qa_system.generate_answer(
+            prompt, 
+            format_for_user=True,
+            progress_callback=progress_cb
+        )
+
+        status.update(label="✅ 답변 완료!", state="complete", expanded=False)
     
-            answer = qa_system.generate_answer(
-                prompt, 
-                format_for_user=True,
-                progress_callback=progress_cb
-            )
+    # ===== 2단계: 답변 타입 확인 =====
+    meta = answer.get("_meta", {})
+    query_type = meta.get("query_type", "일반_정보_검색")
     
-            status.update(label="✅ 답변 완료!", state="complete", expanded=False)
+    st.markdown("---")
+    
+    # ===== 3단계: 답변 타입에 따라 분기 처리 =====
+    
+    # 📄 문서 생성 타입
+    if query_type == "문서_생성":
+        제목 = answer.get("제목", "생성된 문서")
         
-        # ===== 2단계: 답변 타입 확인 =====
-        meta = answer.get("_meta", {})
-        query_type = meta.get("query_type", "일반_정보_검색")
+        # 성공 메시지 표시
+        st.success(f"📄 **{제목}** 문서가 생성되었습니다!")
         
-        st.markdown("---")
+        # 문서 내용 포맷팅
+        document_content = format_document_content(answer)
         
-        # ===== 3단계: 답변 타입에 따라 분기 처리 =====
+        # 세션 상태에 문서 저장 (편집기 활성화용)
+        st.session_state.current_document = format_document_content(answer)
+        st.session_state.document_title = 제목        
+        # 화면에 표시할 간단한 텍스트
+        display_text = f"📄 {제목} 문서가 생성되었습니다. 위 편집기에서 수정 후 다운로드하세요."    
+    else:
+        display_text = answer.get("user_friendly_answer", "답변을 생성했습니다.")
+
+        # 세션에 저장 (전체 답변 포함)
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": display_text,
+            "full_answer": answer  # 원본 JSON 보관
+        })
         
-        # 📄 문서 생성 타입
-        if query_type == "문서_생성":
-            제목 = answer.get("제목", "생성된 문서")
-            
-            # 성공 메시지 표시
-            st.success(f"📄 **{제목}** 문서가 생성되었습니다!")
-            
-            # 문서 내용 포맷팅
-            document_content = format_document_content(answer)
-            
-            # 세션 상태에 문서 저장 (편집기 활성화용)
-            st.session_state.current_document = document_content
-            st.session_state.document_title = 제목
-            
-            # 문서 미리보기
-            st.markdown("**📋 문서 미리보기:**")
-            st.code(document_content[:2000] + "..." if len(document_content) > 2000 else document_content)
-            
-            st.info("👆 위 '문서 편집기'에서 내용을 수정하고 다운로드할 수 있습니다.")
-            
-            # 🆕 근거 출처 표시 (새 답변)
-            show_sources_expander(answer, unique_key="new")
-            
-            # 화면에 표시할 간단한 텍스트
-            display_text = f"📄 {제목} 문서가 생성되었습니다. 위 편집기에서 수정 후 다운로드하세요."
-            
-            # 세션에 저장 (전체 답변 포함)
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": display_text,
-                "full_answer": answer  # 원본 JSON 보관
-            })
-            
-            # 페이지 새로고침 (편집기 활성화)
-            st.rerun()
-        
-        # 💬 일반 답변 타입
-        else:
-            # 사용자 친화적 답변 추출
-            display_text = answer.get("user_friendly_answer", "답변을 생성했습니다.")
-            
-            # 답변 표시
-            st.markdown(display_text)
-            
-            # 🆕 근거 출처 표시 (새 답변)
-            show_sources_expander(answer, unique_key="new")
-            
-            # 세션에 저장 (전체 답변 포함)
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": display_text,
-                "full_answer": answer  # 원본 JSON 보관
-            })
+        # 페이지 새로고침 (편집기 활성화)
+        st.rerun()
